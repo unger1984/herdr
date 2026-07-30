@@ -81,10 +81,10 @@ pub(crate) use self::{
         agent_panel_toggle_rect, all_agent_panel_entries, collapsed_sidebar_sections,
         collapsed_sidebar_toggle_rect, compute_workspace_card_areas, expanded_sidebar_sections,
         expanded_sidebar_toggle_rect, normalized_workspace_scroll, sidebar_section_divider_rect,
-        workspace_drop_slots, workspace_group_chevron_rect, workspace_list_entries,
-        workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
-        workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry,
-        WorkspaceListEntry,
+        sidebar_status_block_height, sidebar_status_rect, workspace_drop_slots,
+        workspace_group_chevron_rect, workspace_list_entries, workspace_list_entries_expanded,
+        workspace_list_rect, workspace_list_scroll_metrics, workspace_list_scrollbar_rect,
+        workspace_parent_group_state, AgentPanelEntry, WorkspaceListEntry,
     },
 };
 
@@ -101,7 +101,7 @@ pub(crate) use self::{
 };
 use crate::app::state::ViewLayout;
 use crate::app::{AppState, Mode};
-use crate::terminal::TerminalRuntimeRegistry;
+use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
 const COLLAPSED_WIDTH: u16 = 4; // num + space + dot + separator
 
@@ -110,17 +110,19 @@ const COLLAPSED_WIDTH: u16 = 4; // num + space + dot + separator
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn compute_view(app: &mut AppState, area: Rect) {
     let terminal_runtimes = TerminalRuntimeRegistry::new();
-    compute_view_with_runtime_registry(app, &terminal_runtimes, area);
+    compute_view_with_runtime_registry(app, &terminal_runtimes, None, area);
 }
 
 pub fn compute_view_with_runtime_registry(
     app: &mut AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_status: Option<&TerminalRuntime>,
     area: Rect,
 ) {
     compute_view_internal(
         app,
         terminal_runtimes,
+        sidebar_status,
         area,
         true,
         crate::kitty_graphics::HostCellSize::default(),
@@ -130,10 +132,18 @@ pub fn compute_view_with_runtime_registry(
 pub fn compute_view_with_cell_size(
     app: &mut AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_status: Option<&TerminalRuntime>,
     area: Rect,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
-    compute_view_internal(app, terminal_runtimes, area, true, cell_size);
+    compute_view_internal(
+        app,
+        terminal_runtimes,
+        sidebar_status,
+        area,
+        true,
+        cell_size,
+    );
 }
 
 /// Compute view geometry for a client-sized render without resizing pane runtimes.
@@ -144,11 +154,13 @@ pub fn compute_view_with_cell_size(
 pub(crate) fn compute_view_without_resizing_panes(
     app: &mut AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_status: Option<&TerminalRuntime>,
     area: Rect,
 ) {
     compute_view_internal(
         app,
         terminal_runtimes,
+        sidebar_status,
         area,
         false,
         crate::kitty_graphics::HostCellSize::default(),
@@ -203,9 +215,34 @@ fn desktop_tab_bar_and_terminal_area(
     }
 }
 
+fn resize_sidebar_status(
+    app: &AppState,
+    sidebar_status: Option<&TerminalRuntime>,
+    sidebar_area: Rect,
+    cell_size: crate::kitty_graphics::HostCellSize,
+) {
+    if app.sidebar_collapsed {
+        return;
+    }
+    let Some(rt) = sidebar_status else {
+        return;
+    };
+    let status_area = sidebar_status_rect(app, sidebar_area);
+    if status_area.width == 0 || status_area.height == 0 {
+        return;
+    }
+    rt.resize(
+        status_area.height,
+        status_area.width,
+        cell_size.width_px,
+        cell_size.height_px,
+    );
+}
+
 fn compute_view_internal(
     app: &mut AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_status: Option<&TerminalRuntime>,
     area: Rect,
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
@@ -236,7 +273,7 @@ fn compute_view_internal(
 
     if !app.sidebar_collapsed {
         app.workspace_scroll = normalized_workspace_scroll(app, sidebar_area, app.workspace_scroll);
-        let (_, detail_area) = expanded_sidebar_sections(sidebar_area, app.sidebar_section_split);
+        let (_, detail_area) = expanded_sidebar_sections(app, sidebar_area);
         let max_agent_scroll = agent_panel_scroll_metrics(app, detail_area).max_offset_from_bottom;
         app.agent_panel_scroll = app.agent_panel_scroll.min(max_agent_scroll);
     } else {
@@ -280,6 +317,7 @@ fn compute_view_internal(
     if resize_panes {
         resize_background_tab_panes_for_desktop(app, terminal_runtimes, main_area, cell_size);
         resize_popup_pane(app, terminal_runtimes, terminal_area, cell_size);
+        resize_sidebar_status(app, sidebar_status, sidebar_area, cell_size);
     }
 
     let toast_hit_area = app
@@ -381,18 +419,19 @@ fn compute_mobile_view(
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn render(app: &AppState, frame: &mut Frame) {
     let terminal_runtimes = TerminalRuntimeRegistry::new();
-    render_with_runtime_registry(app, &terminal_runtimes, frame);
+    render_with_runtime_registry(app, &terminal_runtimes, None, frame);
 }
 
 pub fn render_with_runtime_registry(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_status: Option<&TerminalRuntime>,
     frame: &mut Frame,
 ) {
     let tab_bar_area = app.view.tab_bar_rect;
     let terminal_area = app.view.terminal_area;
 
-    render_navigation_chrome(app, terminal_runtimes, frame);
+    render_navigation_chrome(app, terminal_runtimes, sidebar_status, frame);
     if app.view.layout != ViewLayout::Mobile {
         render_tab_bar(app, frame, tab_bar_area);
     }
@@ -446,6 +485,7 @@ pub fn render_with_runtime_registry(
 fn render_navigation_chrome(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_status: Option<&TerminalRuntime>,
     frame: &mut Frame,
 ) {
     if app.view.layout == ViewLayout::Mobile {
@@ -454,7 +494,13 @@ fn render_navigation_chrome(
         if app.sidebar_collapsed {
             render_sidebar_collapsed(app, frame, app.view.sidebar_rect);
         } else {
-            render_sidebar(app, terminal_runtimes, frame, app.view.sidebar_rect);
+            render_sidebar(
+                app,
+                terminal_runtimes,
+                sidebar_status,
+                frame,
+                app.view.sidebar_rect,
+            );
         }
     }
 }

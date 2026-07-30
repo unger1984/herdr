@@ -426,9 +426,26 @@ impl Default for SpacesSidebarConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(default)]
+pub struct SidebarStatusConfig {
+    /// Command rendered as a live terminal block below the expanded sidebar
+    /// agent list. Empty disables the block.
+    pub command: Vec<String>,
+    /// Height of the status block in terminal rows. Zero disables the block.
+    pub height: u16,
+}
+
+impl SidebarStatusConfig {
+    pub fn enabled(&self) -> bool {
+        !self.command.is_empty() && self.height > 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct SidebarConfig {
     pub agents: AgentsSidebarConfig,
     pub spaces: SpacesSidebarConfig,
+    pub status: SidebarStatusConfig,
 }
 
 #[cfg(test)]
@@ -459,6 +476,57 @@ mod tests {
             ]
         );
         assert_eq!(config.spaces.row_gap, 0);
+        assert!(!config.status.enabled());
+    }
+
+    #[test]
+    fn parses_status_command_block() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar.status]
+command = ["bash", "~/limits.sh"]
+height = 10
+"#,
+        )
+        .expect("sidebar status config");
+
+        assert_eq!(
+            config.ui.sidebar.status.command,
+            vec!["bash".to_string(), "~/limits.sh".to_string()]
+        );
+        assert_eq!(config.ui.sidebar.status.height, 10);
+        assert!(config.ui.sidebar.status.enabled());
+    }
+
+    #[test]
+    fn status_block_is_disabled_without_command_or_height() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar.status]
+height = 10
+"#,
+        )
+        .expect("status without command");
+        assert!(!config.ui.sidebar.status.enabled());
+
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar.status]
+command = ["bash", "~/limits.sh"]
+"#,
+        )
+        .expect("status without height");
+        assert!(!config.ui.sidebar.status.enabled());
+
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar.status]
+command = ["bash", "~/limits.sh"]
+height = 0
+"#,
+        )
+        .expect("status with zero height");
+        assert!(!config.ui.sidebar.status.enabled());
     }
 
     #[test]

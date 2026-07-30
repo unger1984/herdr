@@ -1016,6 +1016,7 @@ impl HeadlessServer {
             crate::ui::compute_view_with_cell_size(
                 &mut self.app.state,
                 &self.app.terminal_runtimes,
+                None,
                 area,
                 client.cell_size,
             );
@@ -1023,6 +1024,7 @@ impl HeadlessServer {
             crate::ui::compute_view_with_runtime_registry(
                 &mut self.app.state,
                 &self.app.terminal_runtimes,
+                None,
                 area,
             );
         }

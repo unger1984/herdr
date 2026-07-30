@@ -174,6 +174,15 @@ impl App {
 
         if let AppEvent::PaneDied { pane_id } = &ev {
             if self
+                .sidebar_status_runtime
+                .as_ref()
+                .is_some_and(|status| status.pane_id == *pane_id)
+            {
+                // Sidebar status command exited: keep the last rendered screen
+                // in place. v1 does not restart it.
+                return;
+            }
+            if self
                 .state
                 .popup_pane
                 .as_ref()

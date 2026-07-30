@@ -15,10 +15,13 @@ use super::text::{display_width, display_width_u16, truncate_end};
 use crate::app::state::{AgentPanelSort, Palette};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
-use crate::terminal::TerminalRuntimeRegistry;
+use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
+/// Rows the workspace and agent sections keep when the status block competes
+/// for sidebar height.
+const MIN_SECTION_ROWS_WITH_STATUS: u16 = 4;
 
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
@@ -56,25 +59,57 @@ fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
     (ws_h, detail_h)
 }
 
-pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, Rect) {
+/// Rows reserved at the bottom of the expanded sidebar for the live status
+/// command block. Zero unless the block is configured and its runtime is live.
+pub(crate) fn sidebar_status_block_height(app: &AppState, content_height: u16) -> u16 {
+    if !app.sidebar_status_running || !app.sidebar_status.enabled() {
+        return 0;
+    }
+    app.sidebar_status
+        .height
+        .min(content_height.saturating_sub(MIN_SECTION_ROWS_WITH_STATUS))
+}
+
+pub(crate) fn expanded_sidebar_sections(app: &AppState, area: Rect) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || content.height == 0 {
         return (Rect::default(), Rect::default());
     }
 
-    let (ws_h, detail_h) = sidebar_section_heights(content.height, split_ratio);
+    let status_h = sidebar_status_block_height(app, content.height);
+    let sections_h = content.height.saturating_sub(status_h);
+    let (ws_h, detail_h) = sidebar_section_heights(sections_h, app.sidebar_section_split);
     let ws_area = Rect::new(content.x, content.y, content.width, ws_h);
     let detail_area = Rect::new(content.x, content.y + ws_h, content.width, detail_h);
     (ws_area, detail_area)
 }
 
-pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
+/// Rect of the live status command block at the bottom of the expanded
+/// sidebar. `Rect::default()` when the block is disabled.
+pub(crate) fn sidebar_status_rect(app: &AppState, area: Rect) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
-    if content.width == 0 || content.height < 6 {
+    let status_h = sidebar_status_block_height(app, content.height);
+    if content.width == 0 || status_h == 0 {
         return Rect::default();
     }
 
-    let (ws_h, _) = sidebar_section_heights(content.height, split_ratio);
+    Rect::new(
+        content.x,
+        content.y + content.height.saturating_sub(status_h),
+        content.width,
+        status_h,
+    )
+}
+
+pub(crate) fn sidebar_section_divider_rect(app: &AppState, area: Rect) -> Rect {
+    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+    let status_h = sidebar_status_block_height(app, content.height);
+    let sections_h = content.height.saturating_sub(status_h);
+    if content.width == 0 || sections_h < 6 {
+        return Rect::default();
+    }
+
+    let (ws_h, _) = sidebar_section_heights(sections_h, app.sidebar_section_split);
     Rect::new(content.x, content.y + ws_h, content.width, 1)
 }
 
@@ -318,7 +353,7 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
-    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    let ws_area = workspace_list_rect(app, area);
     let body = workspace_list_body_rect(ws_area, false);
     if body.height == 0 {
         return requested;
@@ -442,8 +477,8 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     entries
 }
 
-pub(crate) fn workspace_list_rect(area: Rect, split_ratio: f32) -> Rect {
-    let (ws_area, _) = expanded_sidebar_sections(area, split_ratio);
+pub(crate) fn workspace_list_rect(app: &AppState, area: Rect) -> Rect {
+    let (ws_area, _) = expanded_sidebar_sections(app, area);
     ws_area
 }
 
@@ -666,7 +701,7 @@ pub(crate) fn compute_workspace_list_areas(
     app: &AppState,
     area: Rect,
 ) -> (Vec<crate::app::state::WorkspaceCardArea>, Vec<()>) {
-    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    let ws_area = workspace_list_rect(app, area);
     if ws_area == Rect::default() {
         return (Vec::new(), Vec::new());
     }
@@ -963,6 +998,7 @@ pub(crate) fn workspace_drop_indicator_row(
 pub(super) fn render_sidebar(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_status: Option<&TerminalRuntime>,
     frame: &mut Frame,
     area: Rect,
 ) {
@@ -981,11 +1017,18 @@ pub(super) fn render_sidebar(
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+    let (ws_area, detail_area) = expanded_sidebar_sections(app, area);
 
     render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
+
+    if let Some(rt) = sidebar_status {
+        let status_area = sidebar_status_rect(app, area);
+        if status_area.width > 0 && status_area.height > 0 {
+            rt.render(frame, status_area, false);
+        }
+    }
 }
 
 fn resolved_token_spans(
@@ -1616,10 +1659,10 @@ mod tests {
         let area = Rect::new(0, 0, 26, 20);
         let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), None, frame, area))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+        let (_, agent_area) = expanded_sidebar_sections(&app, area);
         let body = agent_panel_body_rect(agent_area, false);
 
         let first = row_text(buffer, body.y, 25);
@@ -1668,9 +1711,9 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
         let area = Rect::new(0, 0, 26, 20);
         let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), None, frame, area))
             .unwrap();
-        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+        let (_, agent_area) = expanded_sidebar_sections(&app, area);
         let body = agent_panel_body_rect(agent_area, false);
         let buffer = terminal.backend().buffer();
         let workspace = buffer[(find_symbol_x(buffer, body.y, body.width, "o"), body.y)].style();
@@ -1694,7 +1737,7 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
         let second_row = app.view.workspace_card_areas[1].rect.y;
         let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), None, frame, area))
             .unwrap();
         let buffer = terminal.backend().buffer();
 
@@ -1737,7 +1780,7 @@ rows = [[{ token = "$hype", fg = "#abcdef", bold = true, dim = false }, "workspa
         let row = app.view.workspace_card_areas[0].rect.y;
         let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), None, frame, area))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let h = buffer[(find_symbol_x(buffer, row, 25, "H"), row)].style();
@@ -1839,10 +1882,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let area = Rect::new(0, 0, 18, 20);
         let mut terminal = Terminal::new(TestBackend::new(18, 20)).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), None, frame, area))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+        let (_, agent_area) = expanded_sidebar_sections(&app, area);
         let body = agent_panel_body_rect(agent_area, false);
         let first = row_text(buffer, body.y, 17);
 
@@ -1870,9 +1913,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let area = Rect::new(0, 0, 10, 12);
         let mut renderer = Terminal::new(TestBackend::new(10, 12)).unwrap();
         renderer
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), None, frame, area))
             .unwrap();
-        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+        let (_, agent_area) = expanded_sidebar_sections(&app, area);
         let body = agent_panel_body_rect(agent_area, false);
         let rendered = row_text(renderer.backend().buffer(), body.y, 9);
 
@@ -1948,7 +1991,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]; 6];
         let area = Rect::new(0, 0, 20, 10);
-        let workspace_area = workspace_list_rect(area, app.sidebar_section_split);
+        let workspace_area = workspace_list_rect(&app, area);
         let body = workspace_list_body_rect(workspace_area, false);
 
         let metrics = workspace_list_scroll_metrics(&app, workspace_area);
@@ -2309,7 +2352,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
     #[test]
     fn expanded_sidebar_sections_handle_tiny_heights() {
-        let (ws_area, detail_area) = expanded_sidebar_sections(Rect::new(0, 0, 20, 5), 0.9);
+        let mut app = crate::app::state::AppState::test_new();
+        app.sidebar_section_split = 0.9;
+
+        let (ws_area, detail_area) = expanded_sidebar_sections(&app, Rect::new(0, 0, 20, 5));
 
         assert_eq!(ws_area, Rect::new(0, 0, 19, 3));
         assert_eq!(detail_area, Rect::new(0, 3, 19, 2));
@@ -2317,9 +2363,66 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
     #[test]
     fn sidebar_section_divider_is_hidden_for_tiny_heights() {
-        let divider = sidebar_section_divider_rect(Rect::new(0, 0, 20, 5), 0.5);
+        let app = crate::app::state::AppState::test_new();
+
+        let divider = sidebar_section_divider_rect(&app, Rect::new(0, 0, 20, 5));
 
         assert_eq!(divider, Rect::default());
+    }
+
+    #[test]
+    fn status_block_shrinks_sections_and_dividers_when_running() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["bash".into(), "~/limits.sh".into()],
+            height: 5,
+        };
+        app.sidebar_status_running = true;
+        let area = Rect::new(0, 0, 20, 25);
+
+        let (ws_area, detail_area) = expanded_sidebar_sections(&app, area);
+        assert_eq!(ws_area.height + detail_area.height, 20);
+        assert_eq!(ws_area, Rect::new(0, 0, 19, 10));
+        assert_eq!(detail_area, Rect::new(0, 10, 19, 10));
+
+        let status_area = sidebar_status_rect(&app, area);
+        assert_eq!(status_area, Rect::new(0, 20, 19, 5));
+
+        let divider = sidebar_section_divider_rect(&app, area);
+        assert_eq!(divider, Rect::new(0, 10, 19, 1));
+    }
+
+    #[test]
+    fn status_block_is_capped_to_keep_section_rows() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["bash".into()],
+            height: 20,
+        };
+        app.sidebar_status_running = true;
+        let area = Rect::new(0, 0, 20, 12);
+
+        let status_area = sidebar_status_rect(&app, area);
+        assert_eq!(status_area.height, 12 - MIN_SECTION_ROWS_WITH_STATUS);
+        let (ws_area, detail_area) = expanded_sidebar_sections(&app, area);
+        assert_eq!(
+            ws_area.height + detail_area.height,
+            MIN_SECTION_ROWS_WITH_STATUS
+        );
+    }
+
+    #[test]
+    fn status_block_reserves_nothing_when_not_running() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["bash".into()],
+            height: 5,
+        };
+        let area = Rect::new(0, 0, 20, 25);
+
+        assert_eq!(sidebar_status_rect(&app, area), Rect::default());
+        let (ws_area, detail_area) = expanded_sidebar_sections(&app, area);
+        assert_eq!(ws_area.height + detail_area.height, 25);
     }
 
     #[test]
@@ -2409,7 +2512,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         app.sidebar_spaces.row_gap = 0;
         let area = Rect::new(0, 0, 30, 20);
         app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
-        let list_area = workspace_list_rect(area, app.sidebar_section_split);
+        let list_area = workspace_list_rect(&app, area);
 
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
         terminal
@@ -2450,7 +2553,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let area = Rect::new(0, 0, 30, 10);
         app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
         assert_eq!(app.view.workspace_card_areas.len(), 2);
-        let list_area = workspace_list_rect(area, app.sidebar_section_split);
+        let list_area = workspace_list_rect(&app, area);
 
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
         terminal
@@ -2542,7 +2645,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         app.sidebar_spaces.row_gap = 0;
         let area = Rect::new(0, 0, 30, 20);
         app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
-        let list_area = workspace_list_rect(area, app.sidebar_section_split);
+        let list_area = workspace_list_rect(&app, area);
         let indicator_row = workspace_drop_indicator_row(
             &app,
             &app.view.workspace_card_areas,

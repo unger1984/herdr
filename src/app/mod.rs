@@ -51,7 +51,7 @@ use crossterm::{
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use tokio::sync::{mpsc, Notify};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::events::AppEvent;
@@ -95,6 +95,9 @@ impl PaneClickState {
 pub struct App {
     pub state: AppState,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
+    /// Live runtime for the user-configured sidebar status command. Local to
+    /// the interactive TUI (`App::run`); the headless server never spawns it.
+    pub(crate) sidebar_status_runtime: Option<SidebarStatusRuntime>,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
@@ -211,6 +214,32 @@ pub(crate) struct PressedTerminalKey {
 
 pub(crate) type InputSourceId = u64;
 const LOCAL_INPUT_SOURCE: InputSourceId = 0;
+
+/// Sidebar status command runtime plus the launch parameters it was spawned
+/// with, so config reloads can tell whether a respawn is needed.
+pub(crate) struct SidebarStatusRuntime {
+    pub(crate) pane_id: crate::layout::PaneId,
+    pub(crate) command: Vec<String>,
+    pub(crate) height: u16,
+    pub(crate) runtime: crate::terminal::TerminalRuntime,
+}
+
+/// The status block repaints in place; deep scrollback only wastes memory.
+const SIDEBAR_STATUS_SCROLLBACK_LIMIT_BYTES: usize = 16 * 1024;
+
+fn expand_sidebar_status_argv(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .map(|arg| {
+            if arg.starts_with('~') {
+                crate::worktree::expand_tilde_path(arg)
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                arg.clone()
+            }
+        })
+        .collect()
+}
 
 fn pressed_key_identity(
     source_id: InputSourceId,
@@ -627,6 +656,8 @@ impl App {
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
+            sidebar_status: config.ui.sidebar.status.clone(),
+            sidebar_status_running: false,
             next_agent_state_change_seq: 0,
             mouse_capture: config.ui.mouse_capture,
             copy_on_select: config.ui.copy_on_select,
@@ -731,6 +762,7 @@ impl App {
             last_api_notification_at: None,
             state,
             terminal_runtimes: restored_terminal_runtimes,
+            sidebar_status_runtime: None,
             event_tx,
             event_rx,
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
@@ -911,6 +943,7 @@ impl App {
             self.input_rx = Some(crate::raw_input::spawn_input_reader());
         }
         self.query_host_terminal_theme();
+        self.sync_sidebar_status_runtime();
 
         let mut needs_render = true;
         let mut host_mouse_capture_active = self.state.mouse_capture;
@@ -1034,6 +1067,10 @@ impl App {
                 needs_render = true;
             }
 
+            if self.take_config_reloaded_from_disk() {
+                self.sync_sidebar_status_runtime();
+            }
+
             if self.ensure_default_workspace() {
                 needs_render = true;
             }
@@ -1068,6 +1105,9 @@ impl App {
                         crate::ui::compute_view_with_cell_size(
                             &mut self.state,
                             &self.terminal_runtimes,
+                            self.sidebar_status_runtime
+                                .as_ref()
+                                .map(|status| &status.runtime),
                             area,
                             cell_size,
                         );
@@ -1075,12 +1115,18 @@ impl App {
                         crate::ui::compute_view_with_runtime_registry(
                             &mut self.state,
                             &self.terminal_runtimes,
+                            self.sidebar_status_runtime
+                                .as_ref()
+                                .map(|status| &status.runtime),
                             area,
                         );
                     }
                     crate::ui::render_with_runtime_registry(
                         &self.state,
                         &self.terminal_runtimes,
+                        self.sidebar_status_runtime
+                            .as_ref()
+                            .map(|status| &status.runtime),
                         frame,
                     );
                 })?;
@@ -1154,6 +1200,7 @@ impl App {
         if !self.no_session {
             self.save_session_now();
         }
+        self.shutdown_sidebar_status_runtime();
 
         Ok(())
     }
@@ -1347,6 +1394,73 @@ impl App {
         reloaded
     }
 
+    /// Reconcile the sidebar status command runtime with the live config.
+    ///
+    /// Only the interactive TUI calls this (startup and config reload from
+    /// `App::run`); the headless server never spawns the command. When the
+    /// configured command or height changes, the runtime is respawned.
+    pub(crate) fn sync_sidebar_status_runtime(&mut self) {
+        let config = self.state.sidebar_status.clone();
+        let stale = match (&self.sidebar_status_runtime, config.enabled()) {
+            (Some(current), true) => {
+                current.command != config.command || current.height != config.height
+            }
+            (Some(_), false) => true,
+            (None, _) => false,
+        };
+        if stale {
+            self.shutdown_sidebar_status_runtime();
+        }
+        if !config.enabled() || self.sidebar_status_runtime.is_some() {
+            return;
+        }
+
+        let argv = expand_sidebar_status_argv(&config.command);
+        let rows = config.height;
+        let cols = self.state.sidebar_width.saturating_sub(1).max(1);
+        let cwd = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        let pane_id = crate::layout::PaneId::alloc();
+        let launch_env = crate::pane::PaneLaunchEnv::from_extra(Vec::new()).without_pane_identity();
+        match crate::terminal::TerminalRuntime::spawn_argv_command(
+            pane_id,
+            rows,
+            cols,
+            cwd,
+            &argv,
+            &launch_env,
+            crate::pane::AgentDetection::Disabled,
+            SIDEBAR_STATUS_SCROLLBACK_LIMIT_BYTES,
+            self.state.host_terminal_theme,
+            self.event_tx.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+        ) {
+            Ok(runtime) => {
+                self.state.sidebar_status_running = true;
+                self.sidebar_status_runtime = Some(SidebarStatusRuntime {
+                    pane_id,
+                    command: config.command,
+                    height: config.height,
+                    runtime,
+                });
+            }
+            Err(err) => {
+                warn!(err = %err, "failed to spawn sidebar status command");
+                self.state.sidebar_status_running = false;
+            }
+        }
+    }
+
+    fn shutdown_sidebar_status_runtime(&mut self) {
+        if let Some(current) = self.sidebar_status_runtime.take() {
+            current.runtime.shutdown();
+        }
+        self.state.sidebar_status_running = false;
+    }
+
     pub(crate) fn apply_config_from_disk(
         &mut self,
         notify_success: bool,
@@ -1453,6 +1567,7 @@ impl App {
                     agent_panel_sort_from_config(config.ui.agent_panel_sort);
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
+                self.state.sidebar_status = config.ui.sidebar.status.clone();
                 self.state.agent_panel_scroll = 0;
                 self.state.accent = crate::config::parse_color(&config.ui.accent);
                 if !self.state.local_sound_playback && self.state.sound != config.ui.sound {

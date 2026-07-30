@@ -711,6 +711,18 @@
           "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim } style tables. Supports built-in and $name metadata tokens; at most 16 rows and 16 tokens per row."
         },
         {
+          "key": "ui.sidebar.status.command",
+          "type": "list of strings",
+          "default": "[]",
+          "description": "Command rendered as a live terminal block below the expanded sidebar agent list, for example [\"bash\", \"~/limits.sh\"]. Runs in a PTY sized to the block; ~ expands to the home directory. Empty disables the block."
+        },
+        {
+          "key": "ui.sidebar.status.height",
+          "type": "integer",
+          "default": "0",
+          "description": "Height of the sidebar status command block in terminal rows. Zero disables the block."
+        },
+        {
           "key": "ui.accent",
           "type": "color",
           "default": "\"cyan\"",
