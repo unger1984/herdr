@@ -1396,9 +1396,9 @@ impl App {
 
     /// Reconcile the sidebar status command runtime with the live config.
     ///
-    /// Only the interactive TUI calls this (startup and config reload from
-    /// `App::run`); the headless server never spawns the command. When the
-    /// configured command or height changes, the runtime is respawned.
+    /// Called by whichever process renders the sidebar: the interactive TUI
+    /// (`App::run`) and the headless server (startup and config reload). When
+    /// the configured command or height changes, the runtime is respawned.
     pub(crate) fn sync_sidebar_status_runtime(&mut self) {
         let config = self.state.sidebar_status.clone();
         let stale = match (&self.sidebar_status_runtime, config.enabled()) {
@@ -1454,7 +1454,7 @@ impl App {
         }
     }
 
-    fn shutdown_sidebar_status_runtime(&mut self) {
+    pub(crate) fn shutdown_sidebar_status_runtime(&mut self) {
         if let Some(current) = self.sidebar_status_runtime.take() {
             current.runtime.shutdown();
         }

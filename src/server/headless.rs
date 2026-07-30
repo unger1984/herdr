@@ -526,6 +526,10 @@ impl HeadlessServer {
         // We use None for input_rx so the event loop doesn't try to read from stdin.
         self.app.input_rx = None;
 
+        // Spawn the user-configured sidebar status command so server-rendered
+        // frames include the block, like the monolithic TUI does in App::run.
+        self.app.sync_sidebar_status_runtime();
+
         let mut needs_render = true;
         let mut needs_full_render = true;
         let mut needs_graphics_render = false;
@@ -1016,7 +1020,10 @@ impl HeadlessServer {
             crate::ui::compute_view_with_cell_size(
                 &mut self.app.state,
                 &self.app.terminal_runtimes,
-                None,
+                self.app
+                    .sidebar_status_runtime
+                    .as_ref()
+                    .map(|status| &status.runtime),
                 area,
                 client.cell_size,
             );
@@ -1024,7 +1031,10 @@ impl HeadlessServer {
             crate::ui::compute_view_with_runtime_registry(
                 &mut self.app.state,
                 &self.app.terminal_runtimes,
-                None,
+                self.app
+                    .sidebar_status_runtime
+                    .as_ref()
+                    .map(|status| &status.runtime),
                 area,
             );
         }
@@ -1404,6 +1414,7 @@ impl HeadlessServer {
         apply_keybindings(&mut self.app, &server_keybindings);
         let report = self.app.apply_config_from_disk(notify_success);
         self.app.take_config_reloaded_from_disk();
+        self.app.sync_sidebar_status_runtime();
         self.server_keybindings = app_keybindings(&self.app);
         let (server_config_diagnostic, server_config_diagnostic_without_keybindings) =
             server_config_diagnostic_summaries(&report.diagnostics);
@@ -3764,6 +3775,10 @@ impl HeadlessServer {
             let _ = crate::server::render_stream::render_virtual_with_runtime_registry(
                 &mut self.app.state,
                 &self.app.terminal_runtimes,
+                self.app
+                    .sidebar_status_runtime
+                    .as_ref()
+                    .map(|status| &status.runtime),
                 area,
                 resize_panes,
                 crate::kitty_graphics::HostCellSize::default(),
@@ -3796,6 +3811,10 @@ impl HeadlessServer {
                         crate::server::render_stream::render_virtual_with_runtime_registry(
                             &mut self.app.state,
                             &self.app.terminal_runtimes,
+                            self.app
+                                .sidebar_status_runtime
+                                .as_ref()
+                                .map(|status| &status.runtime),
                             area,
                             is_foreground,
                             render_cell_size,
@@ -4193,6 +4212,9 @@ impl HeadlessServer {
 
         // Drain remaining API requests with server_unavailable.
         self.drain_api_requests_with_shutdown_check();
+
+        // Stop the sidebar status command runtime; pane runtimes shut down on drop.
+        self.app.shutdown_sidebar_status_runtime();
 
         // Close all client connections.
         let staged_files = self
@@ -4801,6 +4823,7 @@ mod tests {
         let (buffer, _) = crate::server::render_stream::render_virtual_with_runtime_registry(
             &mut server.app.state,
             &server.app.terminal_runtimes,
+            None,
             Rect::new(0, 0, 100, 30),
             true,
             crate::kitty_graphics::HostCellSize::default(),
@@ -8584,6 +8607,7 @@ next_tab = ""
         let (_, cursor) = crate::server::render_stream::render_virtual_with_runtime_registry(
             &mut server.app.state,
             &server.app.terminal_runtimes,
+            None,
             ratatui::layout::Rect::new(0, 0, 80, 24),
             true,
             crate::kitty_graphics::HostCellSize::default(),
@@ -8624,6 +8648,7 @@ next_tab = ""
         let _ = crate::server::render_stream::render_virtual_with_runtime_registry(
             &mut server.app.state,
             &server.app.terminal_runtimes,
+            None,
             ratatui::layout::Rect::new(0, 0, 80, 24),
             true,
             crate::kitty_graphics::HostCellSize::default(),

@@ -7,7 +7,7 @@ use crate::app::state::AppState;
 use crate::app::Mode;
 use crate::protocol::render_ansi::{BlitEncoder, EncodedBlit};
 use crate::protocol::{CursorState, FrameData, RenderEncoding, ServerMessage, TerminalFrame};
-use crate::terminal::TerminalRuntimeRegistry;
+use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
 /// Per-client render baseline for the negotiated render encoding.
 pub(crate) enum ClientRenderState {
@@ -295,6 +295,7 @@ pub(crate) fn render_virtual(
     render_virtual_with_runtime_registry(
         app_state,
         &terminal_runtimes,
+        None,
         area,
         resize_panes,
         crate::kitty_graphics::HostCellSize::default(),
@@ -304,6 +305,7 @@ pub(crate) fn render_virtual(
 pub(crate) fn render_virtual_with_runtime_registry(
     app_state: &mut AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    sidebar_status: Option<&TerminalRuntime>,
     area: Rect,
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
@@ -312,9 +314,20 @@ pub(crate) fn render_virtual_with_runtime_registry(
     let pre_compute_suppresses_focused_terminal_cursor =
         !popup_visible && focused_terminal_suppresses_host_cursor(app_state, terminal_runtimes);
     if resize_panes {
-        crate::ui::compute_view_with_cell_size(app_state, terminal_runtimes, None, area, cell_size);
+        crate::ui::compute_view_with_cell_size(
+            app_state,
+            terminal_runtimes,
+            sidebar_status,
+            area,
+            cell_size,
+        );
     } else {
-        crate::ui::compute_view_without_resizing_panes(app_state, terminal_runtimes, None, area);
+        crate::ui::compute_view_without_resizing_panes(
+            app_state,
+            terminal_runtimes,
+            sidebar_status,
+            area,
+        );
     }
     let suppress_focused_terminal_cursor = pre_compute_suppresses_focused_terminal_cursor
         || (!popup_visible
@@ -325,7 +338,12 @@ pub(crate) fn render_virtual_with_runtime_registry(
 
     terminal
         .draw(|frame| {
-            crate::ui::render_with_runtime_registry(app_state, terminal_runtimes, None, frame);
+            crate::ui::render_with_runtime_registry(
+                app_state,
+                terminal_runtimes,
+                sidebar_status,
+                frame,
+            );
         })
         .expect("render to TestBackend should never fail");
 
@@ -466,4 +484,69 @@ fn focused_terminal_suppresses_host_cursor(
     app_state
         .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
         .is_some_and(crate::terminal::TerminalRuntime::synchronized_output_active)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Server-rendered frames include the live sidebar status block when the
+    /// status runtime is present, like the monolithic TUI draw path.
+    #[tokio::test]
+    async fn virtual_render_includes_sidebar_status_block() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        app.ensure_test_terminals();
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["limits".into()],
+            height: 4,
+        };
+        app.sidebar_status_running = true;
+        let status = TerminalRuntime::test_with_screen_bytes(19, 4, b"GPU 42%");
+
+        let (buffer, _) = render_virtual_with_runtime_registry(
+            &mut app,
+            &TerminalRuntimeRegistry::new(),
+            Some(&status),
+            Rect::new(0, 0, 100, 30),
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        let status_area = crate::ui::sidebar_status_rect(&app, app.view.sidebar_rect);
+        assert_eq!(status_area.height, 4);
+        let row: String = (status_area.x..status_area.x + status_area.width)
+            .map(|x| buffer[(x, status_area.y)].symbol())
+            .collect();
+        assert!(row.contains("GPU 42%"), "status row: {row:?}");
+    }
+
+    /// Non-foreground renders keep the status runtime size pinned, like panes.
+    #[tokio::test]
+    async fn virtual_render_without_resizing_keeps_status_runtime_size() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        app.ensure_test_terminals();
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["limits".into()],
+            height: 4,
+        };
+        app.sidebar_status_running = true;
+        let status = TerminalRuntime::test_with_screen_bytes(10, 4, b"");
+
+        let _ = render_virtual_with_runtime_registry(
+            &mut app,
+            &TerminalRuntimeRegistry::new(),
+            Some(&status),
+            Rect::new(0, 0, 100, 30),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        assert_eq!(status.current_size(), (4, 10));
+    }
 }

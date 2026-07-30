@@ -1084,6 +1084,7 @@ mod tests {
         let (buffer, cursor) = crate::server::render_stream::render_virtual_with_runtime_registry(
             &mut app.state,
             &app.terminal_runtimes,
+            None,
             ratatui::layout::Rect::new(0, 0, 106, 20),
             false,
             crate::kitty_graphics::HostCellSize::default(),
