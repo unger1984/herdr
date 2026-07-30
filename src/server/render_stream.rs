@@ -517,10 +517,53 @@ mod tests {
 
         let status_area = crate::ui::sidebar_status_rect(&app, app.view.sidebar_rect);
         assert_eq!(status_area.height, 4);
-        let row: String = (status_area.x..status_area.x + status_area.width)
+        let divider: String = (status_area.x..status_area.x + status_area.width)
             .map(|x| buffer[(x, status_area.y)].symbol())
             .collect();
-        assert!(row.contains("GPU 42%"), "status row: {row:?}");
+        assert!(
+            divider.chars().all(|ch| ch == '─'),
+            "divider row: {divider:?}"
+        );
+        let content: String = (status_area.x..status_area.x + status_area.width)
+            .map(|x| buffer[(x, status_area.y + 1)].symbol())
+            .collect();
+        assert!(
+            content.contains("GPU 42%"),
+            "status content row: {content:?}"
+        );
+    }
+
+    /// The status block divider highlights with the accent color while the
+    /// block holds input focus.
+    #[tokio::test]
+    async fn virtual_render_sidebar_status_divider_accent_when_focused() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        app.ensure_test_terminals();
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["limits".into()],
+            height: 4,
+        };
+        app.sidebar_status_running = true;
+        app.sidebar_status_focused = true;
+        let status = TerminalRuntime::test_with_screen_bytes(19, 4, b"");
+
+        let (buffer, _) = render_virtual_with_runtime_registry(
+            &mut app,
+            &TerminalRuntimeRegistry::new(),
+            Some(&status),
+            Rect::new(0, 0, 100, 30),
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        let status_area = crate::ui::sidebar_status_rect(&app, app.view.sidebar_rect);
+        assert_eq!(status_area.height, 4);
+        let cell = &buffer[(status_area.x, status_area.y)];
+        assert_eq!(cell.symbol(), "─");
+        assert_eq!(cell.fg, app.palette.accent);
     }
 
     /// Non-foreground renders keep the status runtime size pinned, like panes.

@@ -61,6 +61,9 @@ pub(super) enum MouseAction {
         menu: ContextMenuState,
         idx: usize,
     },
+    /// Click landed inside the sidebar status block: the app layer ensures the
+    /// status runtime is spawned (a dead runtime respawns on click).
+    EnsureSidebarStatusRuntime,
 }
 
 enum MobileMouseResult {
@@ -512,9 +515,17 @@ impl AppState {
                     return None;
                 }
 
+                let status_block = self.sidebar_status_block_rect();
+                if rect_contains(status_block, mouse.column, mouse.row) {
+                    self.sidebar_status_focused = true;
+                    return Some(MouseAction::EnsureSidebarStatusRuntime);
+                }
+                self.sidebar_status_focused = false;
+
                 if in_sidebar {
                     if self.on_sidebar_toggle(mouse.column, mouse.row) {
                         self.sidebar_collapsed = !self.sidebar_collapsed;
+                        self.sidebar_status_focused = false;
                         return None;
                     }
 

@@ -1111,6 +1111,7 @@ impl AppState {
     pub fn switch_workspace(&mut self, idx: usize) {
         if idx < self.workspaces.len() {
             let previous_focus = self.current_pane_focus_target();
+            self.sidebar_status_focused = false;
             self.active = Some(idx);
             self.selected = idx;
             let workspace_id = self.workspaces[idx].id.clone();
@@ -1145,6 +1146,7 @@ impl AppState {
 
         let previous_focus = self.current_pane_focus_target();
         let workspace_changed = self.active != Some(ws_idx);
+        self.sidebar_status_focused = false;
         self.active = Some(ws_idx);
         self.selected = ws_idx;
         let workspace_id = self.workspaces[ws_idx].id.clone();

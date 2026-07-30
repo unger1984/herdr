@@ -1510,10 +1510,17 @@ pub struct AppState {
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub sidebar_status: crate::config::SidebarStatusConfig,
-    /// Whether the sidebar status command runtime is live. Owned by the app
-    /// layer; sidebar geometry reserves the status block only while this is
-    /// true, so a failed spawn leaves no empty strip behind.
+    /// Whether the sidebar status command block keeps its reserved rows.
+    /// Owned by the app layer; sidebar geometry reserves the status block only
+    /// while this is true, so a failed spawn leaves no empty strip behind. A
+    /// dead runtime (command exited) keeps this true so the block and its
+    /// divider stay visible until the next click respawns the command.
     pub sidebar_status_running: bool,
+    /// Whether terminal-mode keys are routed to the sidebar status command
+    /// instead of the focused pane. Set by clicking the status block, cleared
+    /// by Esc, clicks outside the block, sidebar collapse, workspace/tab
+    /// switches, and status runtime death.
+    pub sidebar_status_focused: bool,
     pub next_agent_state_change_seq: u64,
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
@@ -1892,6 +1899,7 @@ impl AppState {
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             sidebar_status: crate::config::SidebarStatusConfig::default(),
             sidebar_status_running: false,
+            sidebar_status_focused: false,
             next_agent_state_change_seq: 0,
             mouse_capture: true,
             copy_on_select: true,

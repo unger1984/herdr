@@ -14,6 +14,12 @@ struct PreparedPaneInput {
     bytes: Bytes,
 }
 
+enum PreparedTerminalInput {
+    Pane(PreparedPaneInput),
+    /// Key bytes encoded for the focused sidebar status command runtime.
+    SidebarStatus(Bytes),
+}
+
 enum PreparedPopupInput {
     NotOpen,
     Consumed,
@@ -53,18 +59,30 @@ impl App {
             }
         }
 
-        let input = self.prepare_terminal_key_forward(source_id, key)?;
-        let sent = self
-            .lookup_runtime_sender(input.ws_idx, input.pane_id)
-            .is_some_and(|runtime| runtime.try_send_bytes(input.bytes).is_ok());
-        sent.then_some(input.target)
+        match self.prepare_terminal_key_forward(source_id, key)? {
+            PreparedTerminalInput::Pane(input) => {
+                let sent = self
+                    .lookup_runtime_sender(input.ws_idx, input.pane_id)
+                    .is_some_and(|runtime| runtime.try_send_bytes(input.bytes).is_ok());
+                sent.then_some(input.target)
+            }
+            PreparedTerminalInput::SidebarStatus(bytes) => {
+                // The status block has no terminal target identity, so its
+                // keys are not tracked for repeat/release forwarding; key
+                // repeats re-route through this same path while focused.
+                if let Some(status) = self.sidebar_status_runtime.as_ref() {
+                    let _ = status.runtime.try_send_bytes(bytes);
+                }
+                None
+            }
+        }
     }
 
     fn prepare_terminal_key_forward(
         &mut self,
         source_id: InputSourceId,
         key: TerminalKey,
-    ) -> Option<PreparedPaneInput> {
+    ) -> Option<PreparedTerminalInput> {
         let key_event = key.as_key_event();
         if self.try_copy_retained_selection(source_id, key) {
             return None;
@@ -132,6 +150,16 @@ impl App {
                 "dropping modifier-only terminal key event instead of forwarding it to pane"
             );
             return None;
+        }
+
+        // A click on the sidebar status block routes terminal keys to the
+        // status command instead of the focused pane, until Esc or a click
+        // outside the block. Herdr keybindings (direct and prefix) are
+        // intercepted above and keep working while the block is focused.
+        if self.state.sidebar_status_focused {
+            return self
+                .prepare_sidebar_status_key_forward(key)
+                .map(PreparedTerminalInput::SidebarStatus);
         }
 
         let ws_idx = self.state.active?;
@@ -226,12 +254,37 @@ impl App {
             return None;
         }
 
-        Some(PreparedPaneInput {
+        Some(PreparedTerminalInput::Pane(PreparedPaneInput {
             ws_idx,
             pane_id,
             target: TerminalInputTarget { terminal_id },
             bytes: Bytes::from(bytes),
-        })
+        }))
+    }
+
+    /// Encode a terminal key for the focused sidebar status command. `None`
+    /// means the key was consumed locally: Esc releases the block focus, a
+    /// dead runtime drops the stale focus, and keys with an empty encoding
+    /// produce no bytes.
+    fn prepare_sidebar_status_key_forward(&mut self, key: TerminalKey) -> Option<Bytes> {
+        let key_event = key.as_key_event();
+        if key_event.code == KeyCode::Esc
+            && key_event.modifiers.is_empty()
+            && !matches!(key_event.kind, crossterm::event::KeyEventKind::Release)
+        {
+            self.state.sidebar_status_focused = false;
+            return None;
+        }
+        let Some(status) = self.sidebar_status_runtime.as_ref() else {
+            self.state.sidebar_status_focused = false;
+            return None;
+        };
+        status.runtime.scroll_reset();
+        let bytes = status.runtime.encode_terminal_key(key);
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(Bytes::from(bytes))
     }
 
     fn prepare_popup_key_forward(&mut self, key: TerminalKey) -> PreparedPopupInput {
@@ -387,13 +440,24 @@ impl App {
             }
         }
 
-        let input = self.prepare_terminal_key_forward(crate::app::LOCAL_INPUT_SOURCE, key)?;
-        let sent = if let Some(runtime) = self.lookup_runtime_sender(input.ws_idx, input.pane_id) {
-            runtime.send_bytes(input.bytes).await.is_ok()
-        } else {
-            false
-        };
-        sent.then_some(input.target)
+        match self.prepare_terminal_key_forward(crate::app::LOCAL_INPUT_SOURCE, key)? {
+            PreparedTerminalInput::Pane(input) => {
+                let sent = if let Some(runtime) =
+                    self.lookup_runtime_sender(input.ws_idx, input.pane_id)
+                {
+                    runtime.send_bytes(input.bytes).await.is_ok()
+                } else {
+                    false
+                };
+                sent.then_some(input.target)
+            }
+            PreparedTerminalInput::SidebarStatus(bytes) => {
+                if let Some(status) = self.sidebar_status_runtime.as_ref() {
+                    let _ = status.runtime.try_send_bytes(bytes);
+                }
+                None
+            }
+        }
     }
 }
 
@@ -1834,5 +1898,78 @@ mod tests {
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .expect("scroll metrics after PageUp");
         assert_eq!(end_metrics.offset_from_bottom, 0);
+    }
+
+    fn install_test_sidebar_status_runtime(app: &mut App) -> tokio::sync::mpsc::Receiver<Bytes> {
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(19, 4);
+        app.sidebar_status_runtime = Some(crate::app::SidebarStatusRuntime {
+            pane_id: crate::layout::PaneId::alloc(),
+            command: vec!["limits".into()],
+            height: 4,
+            runtime,
+        });
+        rx
+    }
+
+    #[tokio::test]
+    async fn sidebar_status_focused_routes_keys_to_status_runtime() {
+        let mut app = app_for_mouse_test();
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_status_focused = true;
+        let mut rx = install_test_sidebar_status_runtime(&mut app);
+
+        app.handle_terminal_key_headless(TerminalKey::new(
+            KeyCode::Char('o'),
+            KeyModifiers::empty(),
+        ));
+
+        assert_eq!(rx.try_recv().expect("routed key bytes").as_ref(), b"o");
+        assert!(app.state.sidebar_status_focused);
+    }
+
+    #[tokio::test]
+    async fn esc_releases_sidebar_status_focus_without_sending() {
+        let mut app = app_for_mouse_test();
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_status_focused = true;
+        let mut rx = install_test_sidebar_status_runtime(&mut app);
+
+        app.handle_terminal_key_headless(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()));
+
+        assert!(!app.state.sidebar_status_focused);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn unfocused_sidebar_status_does_not_capture_keys() {
+        let mut app = app_for_mouse_test();
+        app.state.mode = Mode::Terminal;
+        let mut rx = install_test_sidebar_status_runtime(&mut app);
+
+        app.handle_terminal_key_headless(TerminalKey::new(
+            KeyCode::Char('o'),
+            KeyModifiers::empty(),
+        ));
+
+        assert!(rx.try_recv().is_err());
+        assert!(!app.state.sidebar_status_focused);
+    }
+
+    #[tokio::test]
+    async fn prefix_key_still_enters_prefix_mode_while_sidebar_status_focused() {
+        let mut app = app_for_mouse_test();
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_status_focused = true;
+        let mut rx = install_test_sidebar_status_runtime(&mut app);
+
+        app.handle_terminal_key_headless(TerminalKey::new(
+            KeyCode::Char('b'),
+            KeyModifiers::CONTROL,
+        ));
+
+        assert_eq!(app.state.mode, Mode::Prefix);
+        assert!(rx.try_recv().is_err());
+        // Focus survives prefix entry; Esc or an outside click releases it.
+        assert!(app.state.sidebar_status_focused);
     }
 }

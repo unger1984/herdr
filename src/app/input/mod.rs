@@ -384,6 +384,7 @@ impl App {
                     MouseAction::ContextMenu { menu, idx } => {
                         self.apply_context_menu_action_via_api(menu, idx)
                     }
+                    MouseAction::EnsureSidebarStatusRuntime => self.sync_sidebar_status_runtime(),
                 }
             }
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))

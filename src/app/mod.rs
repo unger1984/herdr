@@ -95,8 +95,9 @@ impl PaneClickState {
 pub struct App {
     pub state: AppState,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
-    /// Live runtime for the user-configured sidebar status command. Local to
-    /// the interactive TUI (`App::run`); the headless server never spawns it.
+    /// Live runtime for the user-configured sidebar status command. Owned by
+    /// whichever process renders the sidebar: the interactive TUI and the
+    /// headless server both spawn it via `sync_sidebar_status_runtime`.
     pub(crate) sidebar_status_runtime: Option<SidebarStatusRuntime>,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
@@ -658,6 +659,7 @@ impl App {
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
             sidebar_status: config.ui.sidebar.status.clone(),
             sidebar_status_running: false,
+            sidebar_status_focused: false,
             next_agent_state_change_seq: 0,
             mouse_capture: config.ui.mouse_capture,
             copy_on_select: config.ui.copy_on_select,
@@ -1459,6 +1461,7 @@ impl App {
             current.runtime.shutdown();
         }
         self.state.sidebar_status_running = false;
+        self.state.sidebar_status_focused = false;
     }
 
     pub(crate) fn apply_config_from_disk(

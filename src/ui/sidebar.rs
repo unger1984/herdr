@@ -101,6 +101,16 @@ pub(crate) fn sidebar_status_rect(app: &AppState, area: Rect) -> Rect {
     )
 }
 
+/// PTY content area of the status block: the block minus its top divider row.
+/// `Rect::default()` when no rows remain for content.
+pub(crate) fn sidebar_status_content_rect(app: &AppState, area: Rect) -> Rect {
+    let block = sidebar_status_rect(app, area);
+    if block.width == 0 || block.height <= 1 {
+        return Rect::default();
+    }
+    Rect::new(block.x, block.y + 1, block.width, block.height - 1)
+}
+
 pub(crate) fn sidebar_section_divider_rect(app: &AppState, area: Rect) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     let status_h = sidebar_status_block_height(app, content.height);
@@ -1011,10 +1021,12 @@ pub(super) fn render_sidebar(
     };
 
     let sep_x = area.x + area.width.saturating_sub(1);
-    let buf = frame.buffer_mut();
-    for y in area.y..area.y + area.height {
-        buf[(sep_x, y)].set_symbol("│");
-        buf[(sep_x, y)].set_style(sep_style);
+    {
+        let buf = frame.buffer_mut();
+        for y in area.y..area.y + area.height {
+            buf[(sep_x, y)].set_symbol("│");
+            buf[(sep_x, y)].set_style(sep_style);
+        }
     }
 
     let (ws_area, detail_area) = expanded_sidebar_sections(app, area);
@@ -1023,10 +1035,25 @@ pub(super) fn render_sidebar(
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
 
-    if let Some(rt) = sidebar_status {
-        let status_area = sidebar_status_rect(app, area);
-        if status_area.width > 0 && status_area.height > 0 {
-            rt.render(frame, status_area, false);
+    let status_area = sidebar_status_rect(app, area);
+    if status_area.width > 0 && status_area.height > 0 {
+        let divider_style = if app.sidebar_status_focused {
+            Style::default().fg(p.accent)
+        } else {
+            Style::default().fg(p.surface_dim)
+        };
+        {
+            let buf = frame.buffer_mut();
+            for x in status_area.x..status_area.x + status_area.width {
+                buf[(x, status_area.y)].set_symbol("─");
+                buf[(x, status_area.y)].set_style(divider_style);
+            }
+        }
+        if let Some(rt) = sidebar_status {
+            let content_area = sidebar_status_content_rect(app, area);
+            if content_area.width > 0 && content_area.height > 0 {
+                rt.render(frame, content_area, false);
+            }
         }
     }
 }
@@ -2423,6 +2450,36 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(sidebar_status_rect(&app, area), Rect::default());
         let (ws_area, detail_area) = expanded_sidebar_sections(&app, area);
         assert_eq!(ws_area.height + detail_area.height, 25);
+    }
+
+    #[test]
+    fn status_block_content_rect_excludes_divider_row() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["bash".into(), "~/limits.sh".into()],
+            height: 5,
+        };
+        app.sidebar_status_running = true;
+        let area = Rect::new(0, 0, 20, 25);
+
+        let status_area = sidebar_status_rect(&app, area);
+        assert_eq!(status_area, Rect::new(0, 20, 19, 5));
+        let content = sidebar_status_content_rect(&app, area);
+        assert_eq!(content, Rect::new(0, 21, 19, 4));
+    }
+
+    #[test]
+    fn status_block_content_rect_is_empty_for_single_row_block() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["bash".into()],
+            height: 1,
+        };
+        app.sidebar_status_running = true;
+        let area = Rect::new(0, 0, 20, 25);
+
+        assert_eq!(sidebar_status_rect(&app, area).height, 1);
+        assert_eq!(sidebar_status_content_rect(&app, area), Rect::default());
     }
 
     #[test]

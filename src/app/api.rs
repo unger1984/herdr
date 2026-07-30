@@ -178,8 +178,13 @@ impl App {
                 .as_ref()
                 .is_some_and(|status| status.pane_id == *pane_id)
             {
-                // Sidebar status command exited: keep the last rendered screen
-                // in place. v1 does not restart it.
+                // Sidebar status command exited: drop the runtime but keep the
+                // reserved rows and divider in place. The area stays empty
+                // until the user clicks the block, which respawns the command.
+                self.sidebar_status_runtime = None;
+                self.state.sidebar_status_focused = false;
+                self.render_dirty.request_generic();
+                self.render_notify.notify_one();
                 return;
             }
             if self
@@ -2268,5 +2273,34 @@ mod tests {
             app.state.toast.as_ref().map(|toast| toast.context.as_str()),
             Some("__herdr_original__ · 1")
         );
+    }
+
+    #[tokio::test]
+    async fn sidebar_status_pane_died_drops_runtime_but_keeps_reserved_rows() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_status_running = true;
+        app.state.sidebar_status_focused = true;
+        let pane_id = crate::layout::PaneId::alloc();
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(19, 4);
+        app.sidebar_status_runtime = Some(crate::app::SidebarStatusRuntime {
+            pane_id,
+            command: vec!["limits".into()],
+            height: 4,
+            runtime,
+        });
+
+        app.handle_internal_event(AppEvent::PaneDied { pane_id });
+
+        assert!(app.sidebar_status_runtime.is_none());
+        assert!(app.state.sidebar_status_running);
+        assert!(!app.state.sidebar_status_focused);
     }
 }

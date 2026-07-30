@@ -22,6 +22,17 @@ impl AppState {
         detail_area
     }
 
+    /// Hit-test area of the sidebar status command block (including its
+    /// divider row). Empty when the sidebar is collapsed or the block is not
+    /// running.
+    pub(super) fn sidebar_status_block_rect(&self) -> Rect {
+        let sidebar = self.view.sidebar_rect;
+        if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
+            return Rect::default();
+        }
+        crate::ui::sidebar_status_rect(self, sidebar)
+    }
+
     pub(super) fn workspace_list_scrollbar_target_at(
         &self,
         col: u16,
@@ -1918,5 +1929,90 @@ mod tests {
         assert!(app.state.drag.is_none());
         let snapshot = capture_snapshot(&app.state);
         assert_eq!(snapshot.sidebar_width, Some(26));
+    }
+
+    fn app_with_sidebar_status_block(command: Vec<String>) -> crate::app::App {
+        let mut app = app_for_mouse_test();
+        let ws = Workspace::test_new("test");
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.sidebar_collapsed = false;
+        app.state.sidebar_status = crate::config::SidebarStatusConfig { command, height: 4 };
+        app.state.sidebar_status_running = true;
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
+        app.state.view.terminal_area = Rect::new(26, 0, 80, 20);
+        app
+    }
+
+    /// Test channel runtime matching the state's status config, so
+    /// `sync_sidebar_status_runtime` treats it as fresh and does not respawn.
+    fn matching_sidebar_status_runtime(
+        state: &crate::app::state::AppState,
+    ) -> crate::app::SidebarStatusRuntime {
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(19, 4);
+        crate::app::SidebarStatusRuntime {
+            pane_id: crate::layout::PaneId::alloc(),
+            command: state.sidebar_status.command.clone(),
+            height: state.sidebar_status.height,
+            runtime,
+        }
+    }
+
+    #[tokio::test]
+    async fn clicking_sidebar_status_block_focuses_without_touching_panes() {
+        let mut app = app_with_sidebar_status_block(vec!["bash".into(), "~/limits.sh".into()]);
+        let focused_pane = app.state.workspaces[0].tabs[0].layout.focused();
+        app.sidebar_status_runtime = Some(matching_sidebar_status_runtime(&app.state));
+        let block = crate::ui::sidebar_status_rect(&app.state, app.state.view.sidebar_rect);
+        assert!(block.height > 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            block.x,
+            block.y,
+        ));
+
+        assert!(app.state.sidebar_status_focused);
+        assert!(app.state.selection.is_none());
+        assert!(app.state.workspace_press.is_none());
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].layout.focused(),
+            focused_pane
+        );
+    }
+
+    #[tokio::test]
+    async fn clicking_outside_sidebar_status_block_clears_focus() {
+        let mut app = app_with_sidebar_status_block(vec!["bash".into()]);
+        app.sidebar_status_runtime = Some(matching_sidebar_status_runtime(&app.state));
+        app.state.sidebar_status_focused = true;
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+
+        assert!(!app.state.sidebar_status_focused);
+    }
+
+    #[tokio::test]
+    async fn clicking_dead_sidebar_status_block_respawns_runtime() {
+        let mut app = app_with_sidebar_status_block(vec!["/bin/sh".into()]);
+        // State after the status command exited: rows stay reserved, the
+        // runtime is gone.
+        assert!(app.sidebar_status_runtime.is_none());
+        let block = crate::ui::sidebar_status_rect(&app.state, app.state.view.sidebar_rect);
+        assert!(block.height > 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            block.x,
+            block.y,
+        ));
+
+        assert!(app.state.sidebar_status_focused);
+        assert!(app.state.sidebar_status_running);
+        assert!(app.sidebar_status_runtime.is_some());
     }
 }
