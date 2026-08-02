@@ -2,11 +2,20 @@
 
 ## Unreleased
 
+### Added
+- Added `ui.pane_scrollbars = false` to hide terminal pane scrollbars and reclaim their reserved column.
+- Added `ui.tab_bar_position = "bottom"` to place the desktop tab row below terminal panes.
+
 ### Changed
+- Experimental options are no longer exposed in the Settings TUI and remain available through the config file.
 - Agent status indicators now use the same static workspace marks across the sidebar, navigator, and mobile views, eliminating continuous spinner rendering while agents work.
 - Relicensed Herdr from AGPL-3.0-or-later to Apache-2.0.
 
 ### Fixed
+- Worktree CLI help and docs no longer advertise the redundant `--json` flag; worktree commands remain JSON-only and continue accepting the flag for compatibility. (#2171)
+- OpenCode 2 preview panes now appear as OpenCode agents and use the existing OpenCode status detection. (#2169)
+- Pane text copied through VS Code Remote Tunnels now reaches the viewing machine's clipboard instead of overwriting the remote host clipboard. (#2015)
+- Windows agent detection now follows Git Bash-launched agents across emulated `exec` process boundaries. (#2107)
 - Detached Windows servers and pane processes now survive logout from the OpenSSH session that started them. (#2008)
 - Windows `agent start` now launches agents without native arguments instead of timing out on an invalid empty PowerShell argument list. (#2072)
 - Headless servers now resume restored agent sessions without waiting for a TUI client to attach. (#2064)
@@ -23,6 +32,8 @@
 - Known-agent integrations now leave pane ownership to confirmed process exit, so restarting Pi with the same saved session restores lifecycle state even with custom working UI. (#1792)
 - OMP integration install, status, and uninstall now respect `PI_CONFIG_DIR` when `PI_CODING_AGENT_DIR` is not set, and installation refuses extension-directory collisions with Pi. (#1696)
 - Physical Escape key records on native Windows now bypass raw VT report framing, so pane applications receive Escape immediately and reliably. (#1736)
+- Native Windows key presses, grouped repeats, and releases now preserve their physical lifecycle and stay with the pane that received the initial press. (#2077)
+- Windows `pane send-keys` and `agent send-keys` now deliver semantic Escape as a complete key tap, preventing a following key from being interpreted as an Alt chord.
 - Windows now shows `system` notifications and completes MP3 notification sounds without leaving PowerShell players waiting for a timeout. (#1330)
 
 ## [0.7.5] - 2026-07-21
