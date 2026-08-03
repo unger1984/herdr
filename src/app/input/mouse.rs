@@ -2956,6 +2956,7 @@ mod tests {
             80,
             app.state.pane_scrollback_limit_bytes,
             app.state.host_terminal_theme,
+            app.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&app.state.default_shell, app.state.shell_mode),
             app.event_tx.clone(),
             app.render_notify.clone(),
@@ -3384,6 +3385,7 @@ mod tests {
             mouse_protocol_encoding: crate::input::MouseProtocolEncoding::Sgr,
             mouse_alternate_scroll: true,
             modify_other_keys: false,
+            color_scheme_reporting: false,
         };
 
         assert_eq!(wheel_routing(input_state), WheelRouting::MouseReport);
@@ -4060,6 +4062,7 @@ mod tests {
             mouse_protocol_encoding: crate::input::MouseProtocolEncoding::Default,
             mouse_alternate_scroll: true,
             modify_other_keys: false,
+            color_scheme_reporting: false,
         };
 
         assert_eq!(wheel_routing(input_state), WheelRouting::AlternateScroll);
@@ -4076,6 +4079,7 @@ mod tests {
             mouse_protocol_encoding: crate::input::MouseProtocolEncoding::Default,
             mouse_alternate_scroll: true,
             modify_other_keys: false,
+            color_scheme_reporting: false,
         };
 
         assert_eq!(wheel_routing(input_state), WheelRouting::HostScroll);

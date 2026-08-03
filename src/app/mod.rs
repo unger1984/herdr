@@ -1429,6 +1429,7 @@ impl App {
             crate::pane::AgentDetection::Disabled,
             SIDEBAR_STATUS_SCROLLBACK_LIMIT_BYTES,
             self.state.host_terminal_theme,
+            self.state.host_terminal_appearance,
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),
@@ -1886,6 +1887,7 @@ impl App {
                         self.set_host_terminal_appearance(appearance, true);
                     }
                 }
+                crate::raw_input::RawInputEvent::HostCellSizeReport { .. } => {}
                 crate::raw_input::RawInputEvent::Unsupported => {}
             }
             self.sync_prefix_input_source(previous_mode);
