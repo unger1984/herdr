@@ -23,6 +23,10 @@ const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 /// for sidebar height.
 const MIN_SECTION_ROWS_WITH_STATUS: u16 = 4;
 
+pub(crate) fn sidebar_status_max_height(content_height: u16) -> u16 {
+    content_height.saturating_sub(MIN_SECTION_ROWS_WITH_STATUS)
+}
+
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
     pub tab_idx: usize,
@@ -67,7 +71,7 @@ pub(crate) fn sidebar_status_block_height(app: &AppState, content_height: u16) -
     }
     app.sidebar_status
         .height
-        .min(content_height.saturating_sub(MIN_SECTION_ROWS_WITH_STATUS))
+        .min(sidebar_status_max_height(content_height))
 }
 
 pub(crate) fn expanded_sidebar_sections(app: &AppState, area: Rect) -> (Rect, Rect) {
@@ -1030,7 +1034,13 @@ pub(super) fn render_sidebar(
 
     let status_area = sidebar_status_rect(app, area);
     if status_area.width > 0 && status_area.height > 0 {
-        let divider_style = if app.sidebar_status_focused {
+        let divider_dragged = app.drag.as_ref().is_some_and(|drag| {
+            matches!(
+                drag.target,
+                crate::app::state::DragTarget::SidebarStatusDivider
+            )
+        });
+        let divider_style = if app.sidebar_status_focused || divider_dragged {
             Style::default().fg(p.accent)
         } else {
             Style::default().fg(p.surface_dim)

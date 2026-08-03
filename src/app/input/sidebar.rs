@@ -294,6 +294,24 @@ impl AppState {
             && row < rect.y + rect.height
     }
 
+    pub(super) fn on_sidebar_status_divider(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed {
+            return false;
+        }
+        let rect = crate::ui::sidebar_status_rect(self, self.view.sidebar_rect);
+        rect.width > 0 && col >= rect.x && col < rect.x + rect.width && row == rect.y
+    }
+
+    pub(super) fn set_sidebar_status_height(&mut self, divider_row: u16) {
+        let sidebar = self.view.sidebar_rect;
+        let max_height = crate::ui::sidebar_status_max_height(sidebar.height);
+        if max_height == 0 || !self.sidebar_status_running || !self.sidebar_status.enabled() {
+            return;
+        }
+        let bottom = sidebar.y.saturating_add(sidebar.height);
+        self.sidebar_status.height = bottom.saturating_sub(divider_row).clamp(1, max_height);
+    }
+
     pub(super) fn set_sidebar_section_split(&mut self, row: u16) {
         let sidebar = self.view.sidebar_rect;
         let content_height = sidebar
@@ -1947,7 +1965,7 @@ mod tests {
         app
     }
 
-    /// Test channel runtime matching the state's status config, so
+    /// Test channel runtime matching the state's status command, so
     /// `sync_sidebar_status_runtime` treats it as fresh and does not respawn.
     fn matching_sidebar_status_runtime(
         state: &crate::app::state::AppState,
@@ -1956,7 +1974,6 @@ mod tests {
         crate::app::SidebarStatusRuntime {
             pane_id: crate::layout::PaneId::alloc(),
             command: state.sidebar_status.command.clone(),
-            height: state.sidebar_status.height,
             runtime,
         }
     }
@@ -1972,7 +1989,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             block.x,
-            block.y,
+            block.y + 1,
         ));
 
         assert!(app.state.sidebar_status_focused);
@@ -1983,6 +2000,70 @@ mod tests {
             app.state.workspaces[0].tabs[0].layout.focused(),
             focused_pane
         );
+    }
+
+    #[tokio::test]
+    async fn dragging_sidebar_status_divider_resizes_without_focusing_or_respawning() {
+        let mut app = app_with_sidebar_status_block(vec!["bash".into()]);
+        app.sidebar_status_runtime = Some(matching_sidebar_status_runtime(&app.state));
+        let pane_id = app
+            .sidebar_status_runtime
+            .as_ref()
+            .expect("status runtime")
+            .pane_id;
+        let block = crate::ui::sidebar_status_rect(&app.state, app.state.view.sidebar_rect);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            block.x + 1,
+            block.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            block.x + 1,
+            block.y - 4,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            block.x + 1,
+            block.y - 4,
+        ));
+
+        assert_eq!(app.state.sidebar_status.height, 8);
+        assert!(!app.state.sidebar_status_focused);
+
+        let resized = crate::ui::sidebar_status_rect(&app.state, app.state.view.sidebar_rect);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            resized.x,
+            resized.y + 1,
+        ));
+
+        assert!(app.state.sidebar_status_focused);
+        assert_eq!(
+            app.sidebar_status_runtime
+                .as_ref()
+                .expect("status runtime remains live")
+                .pane_id,
+            pane_id
+        );
+    }
+
+    #[test]
+    fn sidebar_status_divider_drag_clamps_to_available_sidebar_rows() {
+        let mut app = app_with_sidebar_status_block(vec!["bash".into()]);
+        let block = crate::ui::sidebar_status_rect(&app.state, app.state.view.sidebar_rect);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            block.x,
+            block.y,
+        ));
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), block.x, 0));
+        assert_eq!(app.state.sidebar_status.height, 16);
+
+        app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), block.x, 30));
+        assert_eq!(app.state.sidebar_status.height, 1);
     }
 
     #[tokio::test]
@@ -2008,7 +2089,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             block.x,
-            block.y,
+            block.y + 1,
         ));
 
         assert!(app.state.sidebar_status_focused);

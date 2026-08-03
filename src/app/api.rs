@@ -2296,7 +2296,6 @@ mod tests {
         app.sidebar_status_runtime = Some(crate::app::SidebarStatusRuntime {
             pane_id,
             command: vec!["limits".into()],
-            height: 4,
             runtime,
         });
 

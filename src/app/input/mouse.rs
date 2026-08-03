@@ -433,6 +433,14 @@ impl AppState {
                     return None;
                 }
 
+                if self.on_sidebar_status_divider(mouse.column, mouse.row) {
+                    self.drag = Some(DragState {
+                        target: DragTarget::SidebarStatusDivider,
+                    });
+                    self.set_sidebar_status_height(mouse.row);
+                    return None;
+                }
+
                 if self.on_sidebar_section_divider(mouse.column, mouse.row) {
                     self.drag = Some(DragState {
                         target: DragTarget::SidebarSectionDivider,
@@ -803,6 +811,9 @@ impl AppState {
                         }
                         DragTarget::SidebarSectionDivider => {
                             self.set_sidebar_section_split(mouse.row);
+                        }
+                        DragTarget::SidebarStatusDivider => {
+                            self.set_sidebar_status_height(mouse.row);
                         }
                         DragTarget::ReleaseNotesScrollbar { .. }
                         | DragTarget::ProductAnnouncementScrollbar { .. }

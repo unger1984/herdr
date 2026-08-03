@@ -1155,6 +1155,7 @@ pub(crate) enum DragTarget {
     },
     SidebarDivider,
     SidebarSectionDivider,
+    SidebarStatusDivider,
 }
 
 /// Active mouse drag on a split border or sidebar divider.

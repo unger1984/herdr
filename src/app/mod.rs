@@ -215,12 +215,11 @@ pub(crate) enum TerminalInputContext {
 pub(crate) type InputSourceId = u64;
 const LOCAL_INPUT_SOURCE: InputSourceId = 0;
 
-/// Sidebar status command runtime plus the launch parameters it was spawned
-/// with, so config reloads can tell whether a respawn is needed.
+/// Sidebar status command runtime plus the command it was spawned with, so
+/// config reloads can tell whether a respawn is needed.
 pub(crate) struct SidebarStatusRuntime {
     pub(crate) pane_id: crate::layout::PaneId,
     pub(crate) command: Vec<String>,
-    pub(crate) height: u16,
     pub(crate) runtime: crate::terminal::TerminalRuntime,
 }
 
@@ -1392,14 +1391,12 @@ impl App {
     /// Reconcile the sidebar status command runtime with the live config.
     ///
     /// Called by whichever process renders the sidebar: the interactive TUI
-    /// (`App::run`) and the headless server (startup and config reload). When
-    /// the configured command or height changes, the runtime is respawned.
+    /// (`App::run`) and the headless server (startup and config reload). A
+    /// command change respawns the runtime; height changes resize its PTY.
     pub(crate) fn sync_sidebar_status_runtime(&mut self) {
         let config = self.state.sidebar_status.clone();
         let stale = match (&self.sidebar_status_runtime, config.enabled()) {
-            (Some(current), true) => {
-                current.command != config.command || current.height != config.height
-            }
+            (Some(current), true) => current.command != config.command,
             (Some(_), false) => true,
             (None, _) => false,
         };
@@ -1439,7 +1436,6 @@ impl App {
                 self.sidebar_status_runtime = Some(SidebarStatusRuntime {
                     pane_id,
                     command: config.command,
-                    height: config.height,
                     runtime,
                 });
             }
