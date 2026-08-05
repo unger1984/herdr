@@ -1709,6 +1709,35 @@ mod tests {
     }
 
     #[test]
+    fn status_block_area_keeps_custom_sidebar_background() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces.clear();
+        app.active = None;
+        app.palette.sidebar_bg = ratatui::style::Color::Rgb(12, 34, 56);
+        app.sidebar_status = crate::config::SidebarStatusConfig {
+            command: vec!["bash".into(), "~/limits.sh".into()],
+            height: 5,
+        };
+        app.sidebar_status_running = true;
+        let area = Rect::new(0, 0, 26, 25);
+
+        let mut terminal = Terminal::new(TestBackend::new(26, 25)).unwrap();
+        terminal
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), None, frame, area))
+            .unwrap();
+
+        // Полоса статус-блока не должна выпадать из кастомного фона сайдбара.
+        let status_area = sidebar_status_rect(&app, area);
+        assert!(status_area.height > 0);
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .all(|cell| cell.bg == app.palette.sidebar_bg));
+    }
+
+    #[test]
     fn default_agent_rows_remove_redundant_state_text() {
         let mut app = crate::app::state::AppState::test_new();
         let workspace = Workspace::test_new("one");
