@@ -1661,8 +1661,6 @@ impl AppState {
         }
         for pane_id in pane_ids {
             self.plugin_panes.remove(&pane_id);
-            self.pane_graphics_layers.remove(&pane_id);
-            self.pane_graphics_streams.remove(&pane_id);
         }
     }
 
@@ -1749,7 +1747,7 @@ impl AppState {
 
         let layout = crate::ui::compute_tab_bar_view(
             ws,
-            area,
+            crate::ui::tab_bar_content_area(self, area),
             self.tab_scroll,
             self.tab_scroll_follow_active,
             self.mouse_capture,
@@ -2936,6 +2934,7 @@ impl AppState {
             }
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
+            AppEvent::TabBarCommandFinished { .. } => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
         }
     }
@@ -3399,26 +3398,6 @@ mod tests {
             state.mode = Mode::Terminal;
         }
         state
-    }
-
-    fn insert_test_pane_graphics_layer(state: &mut AppState, pane_id: PaneId) {
-        state.pane_graphics_layers.insert(
-            pane_id,
-            crate::app::state::PaneGraphicsLayer::new(
-                crate::api::schema::PaneGraphicsFormat::Rgba,
-                1,
-                1,
-                vec![1, 2, 3, 4],
-                crate::api::schema::PaneGraphicsPlacementParams::default(),
-            ),
-        );
-    }
-
-    fn insert_test_pane_graphics_state(state: &mut AppState, pane_id: PaneId) {
-        insert_test_pane_graphics_layer(state, pane_id);
-        state
-            .pane_graphics_streams
-            .insert(pane_id, "test-stream".into());
     }
 
     fn mark_linked_worktree(state: &mut AppState, ws_idx: usize) {
@@ -5833,13 +5812,9 @@ mod tests {
                 entrypoint: "board".into(),
             },
         );
-        insert_test_pane_graphics_state(&mut state, closed);
-
         state.close_pane();
         assert_eq!(state.workspaces[0].panes.len(), 1);
         assert!(!state.plugin_panes.contains_key(&closed));
-        assert!(!state.pane_graphics_layers.contains_key(&closed));
-        assert!(!state.pane_graphics_streams.contains_key(&closed));
         state.assert_invariants_for_test();
     }
 
@@ -5909,14 +5884,10 @@ mod tests {
                 entrypoint: "board".into(),
             },
         );
-        insert_test_pane_graphics_state(&mut state, pane_id);
-
         state.close_tab();
 
         assert!(!state.terminals.contains_key(&terminal_id));
         assert!(!state.plugin_panes.contains_key(&pane_id));
-        assert!(!state.pane_graphics_layers.contains_key(&pane_id));
-        assert!(!state.pane_graphics_streams.contains_key(&pane_id));
         state.assert_invariants_for_test();
     }
 
@@ -5932,14 +5903,10 @@ mod tests {
                 entrypoint: "board".into(),
             },
         );
-        insert_test_pane_graphics_state(&mut state, pane_id);
-
         state.close_selected_workspace();
 
         assert!(!state.terminals.contains_key(&terminal_id));
         assert!(!state.plugin_panes.contains_key(&pane_id));
-        assert!(!state.pane_graphics_layers.contains_key(&pane_id));
-        assert!(!state.pane_graphics_streams.contains_key(&pane_id));
         state.assert_invariants_for_test();
     }
 
