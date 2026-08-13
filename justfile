@@ -60,6 +60,12 @@ install-hooks:
     @echo "installed git hooks from .githooks"
 
 # Build release binary
+[unix]
+build:
+    cargo build --release --locked
+
+[script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
+[windows]
 build:
     cargo build --release --locked
 
@@ -75,6 +81,7 @@ website-build:
 integration-assets-test:
     bun test src/integration/assets/herdr-agent-state.test.ts
     bun test src/integration/assets/opencode/herdr-agent-state.test.ts
+    bun test src/integration/assets/opencode/herdr-tui-session.test.ts
 
 # Run plugin marketplace Worker tests
 plugin-marketplace-test:
