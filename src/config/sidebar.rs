@@ -104,6 +104,7 @@ pub struct SidebarTokenStyle {
 pub enum AgentSidebarToken {
     StateIcon,
     StateText,
+    Machine,
     Workspace,
     Tab,
     Pane,
@@ -234,6 +235,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
     match token {
         AgentSidebarToken::StateIcon => "state_icon".into(),
         AgentSidebarToken::StateText => "state_text".into(),
+        AgentSidebarToken::Machine => "machine".into(),
         AgentSidebarToken::Workspace => "workspace".into(),
         AgentSidebarToken::Tab => "tab".into(),
         AgentSidebarToken::Pane => "pane".into(),
@@ -288,6 +290,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
             &[
                 ("state_icon", Self::StateIcon),
                 ("state_text", Self::StateText),
+                ("machine", Self::Machine),
                 ("workspace", Self::Workspace),
                 ("tab", Self::Tab),
                 ("pane", Self::Pane),
@@ -393,6 +396,7 @@ impl Default for AgentsSidebarConfig {
             rows: vec![
                 vec![
                     AgentSidebarToken::StateIcon,
+                    AgentSidebarToken::Machine,
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
                 ],
@@ -460,6 +464,7 @@ mod tests {
             vec![
                 vec![
                     AgentSidebarToken::StateIcon,
+                    AgentSidebarToken::Machine,
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
                 ],
@@ -668,30 +673,7 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "$jj", bold = tru
 
     #[test]
     fn accepts_every_canonical_agent_override_key() {
-        let agents = [
-            Agent::Pi,
-            Agent::Claude,
-            Agent::Codex,
-            Agent::Gemini,
-            Agent::Cursor,
-            Agent::Devin,
-            Agent::Antigravity,
-            Agent::Cline,
-            Agent::Omp,
-            Agent::Mastracode,
-            Agent::OpenCode,
-            Agent::GithubCopilot,
-            Agent::Kimi,
-            Agent::Kiro,
-            Agent::Droid,
-            Agent::Amp,
-            Agent::Grok,
-            Agent::Hermes,
-            Agent::Kilo,
-            Agent::Qodercli,
-            Agent::Qwen,
-            Agent::Maki,
-        ];
+        let agents = Agent::ALL;
         let entries = agents
             .iter()
             .map(|agent| format!("{} = [[\"agent\"]]", crate::detect::agent_label(*agent)))
