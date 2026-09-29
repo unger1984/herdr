@@ -1442,6 +1442,12 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
+            AppEvent::CodexPromptObserved { pane_id, ready } => self
+                .update_terminal_state(pane_id, |terminal| {
+                    terminal.observe_codex_prompt_ready(ready)
+                })
+                .into_iter()
+                .collect(),
             AppEvent::StateChanged {
                 pane_id,
                 agent,
@@ -1494,6 +1500,28 @@ impl AppState {
                     .collect()
                 }
             }
+            AppEvent::AgentResumeReported {
+                pane_id,
+                source,
+                agent_label,
+                seq,
+                argv,
+            } => self
+                .update_terminal_state(pane_id, |terminal| {
+                    terminal.record_reported_resume(&source, &agent_label, seq, argv);
+                    None
+                })
+                .into_iter()
+                .collect(),
+            AppEvent::ReportedAgentShellReturned {
+                pane_id,
+                observed_at,
+            } => self
+                .update_terminal_state(pane_id, |terminal| {
+                    terminal.clear_self_reported_agent(observed_at)
+                })
+                .into_iter()
+                .collect(),
             AppEvent::AgentSessionReported {
                 pane_id,
                 source,
@@ -1647,7 +1675,14 @@ impl AppState {
             let terminal = self.terminals.get_mut(&terminal_id)?;
             let previous_agent_name = terminal.agent_name.clone();
             let had_completion = terminal.last_agent_completion_seq.is_some() || !previous_seen;
-            let mutation = update(terminal)?;
+            let resume_revision = terminal.reported_resume_revision();
+            let mutation = update(terminal);
+            terminal.reconcile_reported_resume();
+            // Resume-only changes return no mutation but must still be saved.
+            if terminal.reported_resume_revision() != resume_revision {
+                self.session_dirty = true;
+            }
+            let mutation = mutation?;
             let completion_reset = mutation.session_ref_changed
                 || mutation
                     .effective_state_change
@@ -2358,7 +2393,7 @@ mod tests {
     fn link_resolution_regions_keep_grapheme_byte_offsets() {
         let mut terminal = crate::ghostty::Terminal::new(40, 3, 1024).unwrap();
         terminal.write("e\u{301}(https://example.com/路e\u{301}),".as_bytes());
-        let expected = vec![crate::api::schema::PaneLinkRegion {
+        let expected = vec![crate::ghostty::LinkRegion {
             row: 0,
             start_col: 2,
             end_col: 24,
@@ -2386,7 +2421,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             regions,
-            vec![crate::api::schema::PaneLinkRegion {
+            vec![crate::ghostty::LinkRegion {
                 row: 0,
                 start_col: 0,
                 end_col: 3
@@ -3124,6 +3159,42 @@ mod tests {
     }
 
     #[test]
+    fn codex_prompt_observation_changes_readiness_without_completing_a_turn() {
+        let mut app = app_with_workspaces(&["active", "background"]);
+        let pane_id = app.workspaces[1].tabs[0].root_pane;
+        let terminal_id = app.workspaces[1].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .begin_managed_agent(
+                "reviewer".into(),
+                Agent::Codex,
+                Instant::now(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(60),
+            );
+        app.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Codex),
+            state: AgentState::Unknown,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: Instant::now(),
+        });
+        app.handle_app_event(AppEvent::CodexPromptObserved {
+            pane_id,
+            ready: true,
+        });
+        let terminal = &app.terminals[&terminal_id];
+        assert!(terminal.managed_agent_interactive_ready());
+        assert_eq!(terminal.state, AgentState::Unknown);
+        assert!(terminal.last_agent_completion_seq.is_none());
+    }
+
+    #[test]
     fn completion_guard_same_state_agent_replacement_clears_old_work() {
         let mut app = app_with_workspaces(&["active", "background"]);
         app.active = Some(0);
@@ -3497,6 +3568,200 @@ mod tests {
         assert!(state.pending_agent_notifications.is_empty());
         assert!(state.drain_due_agent_notifications(deadline).is_empty());
         assert!(state.toast.is_none());
+    }
+
+    fn report_custom_agent_with_resume(state: &mut AppState, pane_id: PaneId, argv: &[&str]) {
+        state.handle_app_event(AppEvent::HookStateReported {
+            pane_id,
+            source: "prime-agent".into(),
+            agent_label: "prime-agent".into(),
+            state: AgentState::Idle,
+            message: None,
+            seq: Some(1),
+            session_ref: None,
+        });
+        state.handle_app_event(AppEvent::AgentResumeReported {
+            pane_id,
+            source: "prime-agent".into(),
+            agent_label: "prime-agent".into(),
+            seq: Some(1),
+            argv: argv.iter().map(|part| part.to_string()).collect(),
+        });
+    }
+
+    fn first_pane_terminal(state: &AppState) -> (PaneId, crate::terminal::TerminalId) {
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        (pane_id, terminal_id)
+    }
+
+    #[test]
+    fn reported_resume_follows_the_reporting_agent_until_release() {
+        let mut state = app_with_workspaces(&["one"]);
+        let (pane_id, terminal_id) = first_pane_terminal(&state);
+        report_custom_agent_with_resume(&mut state, pane_id, &["prime-agent", "--resume", "a"]);
+
+        let resume = state.terminals[&terminal_id].reported_resume().unwrap();
+        assert_eq!(resume.agent, "prime-agent");
+        assert_eq!(resume.argv, vec!["prime-agent", "--resume", "a"]);
+
+        state.handle_app_event(AppEvent::AgentResumeReported {
+            pane_id,
+            source: "someone-else".into(),
+            agent_label: "other".into(),
+            seq: None,
+            argv: vec!["other".into()],
+        });
+        assert_eq!(
+            state.terminals[&terminal_id]
+                .reported_resume()
+                .unwrap()
+                .argv,
+            vec!["prime-agent", "--resume", "a"]
+        );
+
+        state.handle_app_event(AppEvent::HookAgentReleased {
+            pane_id,
+            source: "prime-agent".into(),
+            agent_label: "prime-agent".into(),
+            known_agent: None,
+            seq: Some(2),
+        });
+        assert!(state.terminals[&terminal_id].reported_resume().is_none());
+    }
+
+    #[test]
+    fn reported_resume_is_dropped_and_saved_when_another_agent_takes_the_pane() {
+        let mut state = app_with_workspaces(&["one"]);
+        let (pane_id, terminal_id) = first_pane_terminal(&state);
+        report_custom_agent_with_resume(&mut state, pane_id, &["prime-agent", "--resume", "a"]);
+        state.session_dirty = false;
+
+        state.handle_app_event(AppEvent::HookStateReported {
+            pane_id,
+            source: "custom:other".into(),
+            agent_label: "other".into(),
+            state: AgentState::Working,
+            message: None,
+            seq: None,
+            session_ref: None,
+        });
+
+        assert!(state.terminals[&terminal_id].reported_resume().is_none());
+        assert!(state.session_dirty);
+    }
+
+    #[test]
+    fn reported_resume_of_recognized_agent_is_dropped_when_its_process_exits() {
+        let mut state = app_with_workspaces(&["one"]);
+        let (pane_id, terminal_id) = first_pane_terminal(&state);
+        state.handle_app_event(AppEvent::AgentProcessDetected {
+            pane_id,
+            agent: Agent::Pi,
+            observed_at: std::time::Instant::now(),
+        });
+        state.handle_app_event(AppEvent::AgentResumeReported {
+            pane_id,
+            source: "herdr:pi".into(),
+            agent_label: "pi".into(),
+            seq: None,
+            argv: vec!["pi".into(), "--continue".into()],
+        });
+        assert!(state.terminals[&terminal_id].reported_resume().is_some());
+        state.session_dirty = false;
+
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: true,
+            observed_at: std::time::Instant::now(),
+        });
+
+        assert!(state.terminals[&terminal_id].reported_resume().is_none());
+        assert!(state.session_dirty);
+
+        state.handle_app_event(AppEvent::AgentResumeReported {
+            pane_id,
+            source: "herdr:pi".into(),
+            agent_label: "pi".into(),
+            seq: None,
+            argv: vec!["pi".into(), "--continue".into()],
+        });
+        assert!(
+            state.terminals[&terminal_id].reported_resume().is_none(),
+            "a late report must not revive an exited agent"
+        );
+    }
+
+    #[test]
+    fn shell_return_drops_self_reported_agent_and_its_resume() {
+        let mut state = app_with_workspaces(&["one"]);
+        let (pane_id, terminal_id) = first_pane_terminal(&state);
+        report_custom_agent_with_resume(&mut state, pane_id, &["prime-agent", "--resume", "a"]);
+        assert!(state.terminals[&terminal_id].self_reported_agent_active());
+
+        state.handle_app_event(AppEvent::ReportedAgentShellReturned {
+            pane_id,
+            observed_at: std::time::Instant::now(),
+        });
+
+        let terminal = &state.terminals[&terminal_id];
+        assert_eq!(terminal.effective_agent_label(), None);
+        assert!(terminal.reported_resume().is_none());
+        assert!(!terminal.self_reported_agent_active());
+    }
+
+    #[test]
+    fn delayed_shell_return_keeps_an_agent_that_claimed_the_pane_afterwards() {
+        let mut state = app_with_workspaces(&["one"]);
+        let (pane_id, terminal_id) = first_pane_terminal(&state);
+        let shell_seen_idle_at = std::time::Instant::now();
+        report_custom_agent_with_resume(&mut state, pane_id, &["prime-agent", "--resume", "b"]);
+
+        state.handle_app_event(AppEvent::ReportedAgentShellReturned {
+            pane_id,
+            observed_at: shell_seen_idle_at,
+        });
+
+        let terminal = &state.terminals[&terminal_id];
+        assert_eq!(terminal.effective_agent_label(), Some("prime-agent"));
+        assert!(terminal.reported_resume().is_some());
+    }
+
+    #[test]
+    fn shell_return_keeps_agents_herdr_recognizes_by_process() {
+        let mut state = app_with_workspaces(&["one"]);
+        let (pane_id, terminal_id) = first_pane_terminal(&state);
+        state.handle_app_event(AppEvent::AgentProcessDetected {
+            pane_id,
+            agent: Agent::Pi,
+            observed_at: std::time::Instant::now(),
+        });
+        state.handle_app_event(AppEvent::HookStateReported {
+            pane_id,
+            source: "herdr:pi".into(),
+            agent_label: "pi".into(),
+            state: AgentState::Working,
+            message: None,
+            seq: Some(1),
+            session_ref: None,
+        });
+        assert!(!state.terminals[&terminal_id].self_reported_agent_active());
+
+        state.handle_app_event(AppEvent::ReportedAgentShellReturned {
+            pane_id,
+            observed_at: std::time::Instant::now(),
+        });
+
+        assert_eq!(
+            state.terminals[&terminal_id].effective_agent_label(),
+            Some("pi")
+        );
     }
 
     #[test]
